@@ -68,7 +68,7 @@
           <select id="max" style="width:auto"><option>20</option><option selected>40</option><option>80</option><option>150</option></select>
         </div>
         <div class="row">
-          <button id="aiset">${AI.active() ? '✨ AI attiva' : '✨ Attiva AI'}</button>
+          <button id="aiset">${AI.active() || AI.manual() ? '✨ AI attiva' : '✨ Attiva AI'}</button>
           <button id="paste">✍️ Incolla testo</button>
           <button id="impjson">⬆️ Importa mazzo (.json)</button>
           <input type="file" id="jsonfile" accept=".json,application/json" hidden>
@@ -139,6 +139,7 @@
     mount(`<div class="card" style="text-align:center"><div class="spinner"></div><p id="st2">Creo le domande…</p></div>`);
     await new Promise(r => setTimeout(r, 30));
     const lang = Gen.detectLang(text);
+    if (AI.manual()) return viewManual(name, text, max, lang);
     let cards = [];
     if (AI.active()) {
       const st = document.getElementById('st2');
@@ -157,34 +158,91 @@
       toast('Non sono riuscito a ricavare abbastanza domande da questo testo.');
       return viewHome();
     }
+    saveNewDeck(name, lang, cards);
+  }
+  function saveNewDeck(name, lang, cards) {
     const deck = Store.newDeck(name, lang, cards);
     if (!Store.put(deck)) toast('Spazio di archiviazione pieno: esporta il mazzo come file.');
     location.hash = '#/deck/' + deck.id;
   }
 
+  /* Modalità manuale: l'utente usa la propria chat Claude (es. piano Pro) e incolla le risposte. */
+  function viewManual(name, text, max, lang) {
+    const { chunks, per } = AI.plan(text, max, 12000, 10);
+    const S = { i: 0, cards: [] };
+    const copy = async (str, ok) => {
+      try { await navigator.clipboard.writeText(str); } catch (e) {
+        const ta = document.createElement('textarea'); ta.value = str; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+      }
+      toast(ok);
+    };
+    const finish = () => {
+      if (S.cards.length < 1) return toast('Incolla prima almeno una risposta di Claude');
+      saveNewDeck(name, lang, Gen.shuffle(S.cards));
+    };
+    const step = () => {
+      if (S.i >= chunks.length) return finish();
+      mount(html`
+        <p><a href="#/">← Annulla</a></p>
+        <h1>Crea le domande con Claude</h1>
+        <p class="lead">Parte <b>${S.i + 1} di ${chunks.length}</b> · domande create finora: <b>${S.cards.length}</b></p>
+        <div class="card stack">
+          <div><b>1.</b> Copia il prompt e incollalo in una chat su <a href="https://claude.ai/new" target="_blank" rel="noopener">claude.ai</a>.</div>
+          <div class="row"><button class="primary" id="c1">📋 Copia prompt con il testo</button>
+            <button id="c2">📎 Copia solo il prompt (allego io il PDF)</button></div>
+          <p class="muted" style="margin:0">Con il secondo bottone allega il PDF alla chat e incolla il prompt: utile per PDF lunghi o con immagini.</p>
+          <div><b>2.</b> Claude risponde con un elenco di domande. Copia <b>tutta</b> la risposta (c'è il tasto "Copia" sul blocco di codice) e incollala qui.</div>
+          <textarea id="paste" placeholder='Incolla qui la risposta di Claude, deve iniziare con [ { "domanda": …' aria-label="Risposta di Claude"></textarea>
+          <div class="row"><button class="primary" id="add">✓ Aggiungi domande</button>
+            <button id="skip" class="ghost">Salta questa parte</button>
+            <button id="end">Crea il mazzo ora</button></div>
+        </div>`);
+      const part = chunks[S.i];
+      document.getElementById('c1').onclick = () => copy(AI.manualPrompt(per, lang, part), 'Prompt copiato: incollalo in Claude');
+      document.getElementById('c2').onclick = () => copy(AI.manualPrompt(max, lang, ''), 'Prompt copiato: allega il PDF e incollalo');
+      document.getElementById('add').onclick = () => {
+        const got = AI.parse(document.getElementById('paste').value);
+        if (!got.length) return toast('Non trovo domande valide: copia tutta la risposta di Claude, dall\'inizio "[" alla fine "]"');
+        S.cards.push(...got); toast(`+${got.length} domande`);
+        S.i++; step();
+      };
+      document.getElementById('skip').onclick = () => { S.i++; step(); };
+      document.getElementById('end').onclick = finish;
+    };
+    step();
+  }
+
   function aiSettings(done) {
     const c = AI.getCfg();
     const m = modal(`<h2 style="margin:0">✨ Domande con AI</h2>
-      <p class="muted">Per creare vere domande a scelta multipla l'app usa Claude. Serve una tua <b>API key</b> di Anthropic
+      <p class="muted">Per creare vere domande a scelta multipla l'app usa Claude. Scegli come:</p>
+      <label class="check"><input type="radio" name="mode" value="manual"${c.mode === 'manual' ? ' checked' : ''}> <span><b>Manuale con il tuo Claude</b> (anche piano Pro, nessun costo extra): copi un prompt in claude.ai e incolli la risposta.</span></label>
+      <label class="check"><input type="radio" name="mode" value="api"${c.mode !== 'manual' ? ' checked' : ''}> <span><b>Automatico con API key</b> (a consumo, nessun copia-incolla).</span></label>
+      <div id="apibox"><p class="muted">Serve una tua <b>API key</b> di Anthropic
       (si crea su <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>; l'uso si paga a consumo, di solito pochi centesimi per PDF).
       La chiave resta solo su questo dispositivo e il testo viene inviato direttamente ad Anthropic, mai a noi.
       Chi riceve i tuoi mazzi <b>non</b> ha bisogno di nessuna chiave.</p>
       <div><label for="k">API key</label><input type="password" id="k" autocomplete="off" placeholder="sk-ant-…" value="${esc(c.key)}"></div>
-      <div><label for="md">Modello</label><select id="md">${AI.MODELS.map(x => `<option value="${x.id}"${x.id === c.model ? ' selected' : ''}>${esc(x.label)}</option>`).join('')}</select></div>
+      <div><label for="md">Modello</label><select id="md">${AI.MODELS.map(x => `<option value="${x.id}"${x.id === c.model ? ' selected' : ''}>${esc(x.label)}</option>`).join('')}</select></div></div>
       <label class="check"><input type="checkbox" id="on"${c.on ? ' checked' : ''}> Usa l'AI quando importo un PDF</label>
       <div id="msg" class="muted"></div>
       <div class="row"><button class="primary" id="save">Salva e verifica</button>
       <button id="rm" class="danger">Rimuovi chiave</button><button id="x" class="ghost">Chiudi</button></div>`);
     const msg = m.querySelector('#msg');
+    const box = m.querySelector('#apibox');
+    const mode = () => m.querySelector('input[name=mode]:checked').value;
+    const sync = () => { box.style.display = mode() === 'api' ? '' : 'none'; };
+    m.querySelectorAll('input[name=mode]').forEach(r => r.onchange = sync); sync();
     m.querySelector('#x').onclick = () => { m.remove(); done && done(); };
     m.querySelector('#rm').onclick = () => { AI.setCfg({ ...AI.getCfg(), key: '' }); m.remove(); toast('Chiave rimossa'); done && done(); };
     m.querySelector('#save').onclick = async () => {
       const key = m.querySelector('#k').value.trim(), model = m.querySelector('#md').value, on = m.querySelector('#on').checked;
+      if (mode() === 'manual') { AI.setCfg({ ...AI.getCfg(), model, on, mode: 'manual' }); m.remove(); toast('Modalità manuale attivata ✨'); done && done(); return; }
       if (!key) { msg.textContent = 'Inserisci la chiave.'; return; }
       msg.textContent = 'Verifico la chiave…';
       try { await AI.test(key, model); }
       catch (e) { msg.textContent = '❌ ' + (e.message || 'Chiave non valida'); return; }
-      AI.setCfg({ key, model, on }); m.remove(); toast('AI attivata ✨'); done && done();
+      AI.setCfg({ key, model, on, mode: 'api' }); m.remove(); toast('AI attivata ✨'); done && done();
     };
   }
 

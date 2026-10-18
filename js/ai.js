@@ -12,17 +12,18 @@
   const PARALLEL = 3;
 
   function getCfg() {
-    try { return Object.assign({ key: '', model: MODELS[0].id, on: true }, JSON.parse(localStorage.getItem(KEY))); }
-    catch (e) { return { key: '', model: MODELS[0].id, on: true }; }
+    try { return Object.assign({ key: '', model: MODELS[0].id, on: true, mode: 'api' }, JSON.parse(localStorage.getItem(KEY))); }
+    catch (e) { return { key: '', model: MODELS[0].id, on: true, mode: 'api' }; }
   }
   function setCfg(c) { try { localStorage.setItem(KEY, JSON.stringify(c)); } catch (e) { } }
-  function active() { const c = getCfg(); return !!(c.key && c.on); }
+  function active() { const c = getCfg(); return !!(c.key && c.on && c.mode !== 'manual'); }
+  function manual() { const c = getCfg(); return !!(c.on && c.mode === 'manual'); }
 
-  function chunkText(text) {
+  function chunkText(text, size = CHUNK) {
     const sents = text.split(/(?<=[.!?])\s+/);
     const chunks = []; let cur = '';
     for (const s of sents) {
-      if (cur.length + s.length > CHUNK && cur) { chunks.push(cur); cur = ''; }
+      if (cur.length + s.length > size && cur) { chunks.push(cur); cur = ''; }
       cur += s + ' ';
     }
     if (cur.trim().length > 200) chunks.push(cur);
@@ -86,16 +87,25 @@
     return cards;
   }
 
+  /* Divide il testo in parti (campionate in modo uniforme) e decide quante domande chiedere per parte. */
+  function plan(text, max, size, perChunk) {
+    let chunks = chunkText(text, size);
+    const n = Math.max(1, Math.min(chunks.length, Math.ceil(max / perChunk), 15));
+    if (chunks.length > n) chunks = Array.from({ length: n }, (_, i) => chunks[Math.floor(i * chunks.length / n)]);
+    if (!chunks.length) chunks = [text.slice(0, size)];
+    return { chunks, per: Math.ceil(max / chunks.length) };
+  }
+
+  /* Prompt per l'uso manuale in una chat (claude.ai): con il testo oppure, senza, per un PDF allegato. */
+  function manualPrompt(n, lang, text) {
+    const head = prompt(n, lang).replace('Rispondi SOLO con un array JSON, senza testo prima o dopo,', 'Rispondi SOLO con un array JSON dentro un unico blocco di codice, senza altro testo,');
+    return text ? head + '\n\n<testo>\n' + text + '\n</testo>' : head + '\n\nIl testo da usare è nel PDF allegato.';
+  }
+
   /* Ritorna { cards, failed } ; lancia errore solo se la chiave è rifiutata. */
   async function generate(text, max, lang, onProgress) {
     const cfg = getCfg();
-    let chunks = chunkText(text);
-    const nChunks = Math.max(1, Math.min(chunks.length, Math.ceil(max / 4), 15));
-    if (chunks.length > nChunks) { // campiona in modo uniforme per coprire tutto il documento
-      chunks = Array.from({ length: nChunks }, (_, i) => chunks[Math.floor(i * chunks.length / nChunks)]);
-    }
-    if (!chunks.length) chunks = [text.slice(0, CHUNK)];
-    const per = Math.ceil(max / chunks.length);
+    const { chunks, per } = plan(text, max, CHUNK, 4);
     const cards = []; let done = 0, failed = 0, fatal = null, next = 0;
     async function worker() {
       while (next < chunks.length && !fatal) {
@@ -119,5 +129,5 @@
     if (!res.ok) { let m = res.status + ''; try { m = (await res.json()).error.message; } catch (e) { } throw new Error(m); }
   }
 
-  root.AI = { getCfg, setCfg, active, generate, test, parse, MODELS };
+  root.AI = { getCfg, setCfg, active, manual, generate, test, parse, plan, manualPrompt, MODELS };
 })(window);
