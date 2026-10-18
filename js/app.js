@@ -54,7 +54,7 @@
     const decks = Store.load();
     mount(html`
       <h1>Trasforma i tuoi PDF in test</h1>
-      <p class="lead">Carica uno o più PDF: l'app crea da sola flashcard, quiz a scelta multipla, completamenti e vero/falso. Tutto resta sul tuo dispositivo.</p>
+      <p class="lead">Carica uno o più PDF: l'app crea da sola flashcard e quiz a scelta multipla. Con l'<b>AI attiva</b> le domande sono vere domande di comprensione con 4 risposte; senza, usa regole semplici (completamenti, definizioni, vero/falso).</p>
       <div class="drop" id="drop">
         <div class="icon">📄</div>
         <p><b>Trascina qui i PDF</b> oppure</p>
@@ -68,6 +68,7 @@
           <select id="max" style="width:auto"><option>20</option><option selected>40</option><option>80</option><option>150</option></select>
         </div>
         <div class="row">
+          <button id="aiset">${AI.active() ? '✨ AI attiva' : '✨ Attiva AI'}</button>
           <button id="paste">✍️ Incolla testo</button>
           <button id="impjson">⬆️ Importa mazzo (.json)</button>
           <input type="file" id="jsonfile" accept=".json,application/json" hidden>
@@ -95,6 +96,7 @@
         m.remove(); buildDeck(name, text, maxSel());
       };
     };
+    document.getElementById('aiset').onclick = () => aiSettings(viewHome);
     const jf = document.getElementById('jsonfile');
     document.getElementById('impjson').onclick = () => jf.click();
     jf.onchange = async () => {
@@ -134,23 +136,63 @@
       toast('Testo insufficiente: il PDF potrebbe essere una scansione senza testo.');
       return viewHome();
     }
-    mount(`<div class="card" style="text-align:center"><div class="spinner"></div><p>Creo le domande…</p></div>`);
+    mount(`<div class="card" style="text-align:center"><div class="spinner"></div><p id="st2">Creo le domande…</p></div>`);
     await new Promise(r => setTimeout(r, 30));
-    const res = Gen.generate(text, { max });
-    if (res.cards.length < 3) {
+    const lang = Gen.detectLang(text);
+    let cards = [];
+    if (AI.active()) {
+      const st = document.getElementById('st2');
+      st.textContent = 'L\'AI sta leggendo il testo e scrivendo le domande…';
+      try {
+        const r = await AI.generate(text, max, lang, (d, n) => { st.textContent = `L'AI sta scrivendo le domande… ${d}/${n}`; });
+        cards = r.cards;
+        if (r.failed) toast(`${r.failed} parti non elaborate, il mazzo potrebbe avere meno domande`);
+      } catch (e) {
+        console.error(e);
+        toast('AI non disponibile (' + (e.message || e) + '). Uso le regole semplici.');
+      }
+    }
+    if (cards.length < 3) cards = Gen.generate(text, { max }).cards;
+    if (cards.length < 3) {
       toast('Non sono riuscito a ricavare abbastanza domande da questo testo.');
       return viewHome();
     }
-    const deck = Store.newDeck(name, res.lang, res.cards);
+    const deck = Store.newDeck(name, lang, cards);
     if (!Store.put(deck)) toast('Spazio di archiviazione pieno: esporta il mazzo come file.');
     location.hash = '#/deck/' + deck.id;
+  }
+
+  function aiSettings(done) {
+    const c = AI.getCfg();
+    const m = modal(`<h2 style="margin:0">✨ Domande con AI</h2>
+      <p class="muted">Per creare vere domande a scelta multipla l'app usa Claude. Serve una tua <b>API key</b> di Anthropic
+      (si crea su <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>; l'uso si paga a consumo, di solito pochi centesimi per PDF).
+      La chiave resta solo su questo dispositivo e il testo viene inviato direttamente ad Anthropic, mai a noi.
+      Chi riceve i tuoi mazzi <b>non</b> ha bisogno di nessuna chiave.</p>
+      <div><label for="k">API key</label><input type="password" id="k" autocomplete="off" placeholder="sk-ant-…" value="${esc(c.key)}"></div>
+      <div><label for="md">Modello</label><select id="md">${AI.MODELS.map(x => `<option value="${x.id}"${x.id === c.model ? ' selected' : ''}>${esc(x.label)}</option>`).join('')}</select></div>
+      <label class="check"><input type="checkbox" id="on"${c.on ? ' checked' : ''}> Usa l'AI quando importo un PDF</label>
+      <div id="msg" class="muted"></div>
+      <div class="row"><button class="primary" id="save">Salva e verifica</button>
+      <button id="rm" class="danger">Rimuovi chiave</button><button id="x" class="ghost">Chiudi</button></div>`);
+    const msg = m.querySelector('#msg');
+    m.querySelector('#x').onclick = () => { m.remove(); done && done(); };
+    m.querySelector('#rm').onclick = () => { AI.setCfg({ ...AI.getCfg(), key: '' }); m.remove(); toast('Chiave rimossa'); done && done(); };
+    m.querySelector('#save').onclick = async () => {
+      const key = m.querySelector('#k').value.trim(), model = m.querySelector('#md').value, on = m.querySelector('#on').checked;
+      if (!key) { msg.textContent = 'Inserisci la chiave.'; return; }
+      msg.textContent = 'Verifico la chiave…';
+      try { await AI.test(key, model); }
+      catch (e) { msg.textContent = '❌ ' + (e.message || 'Chiave non valida'); return; }
+      AI.setCfg({ key, model, on }); m.remove(); toast('AI attivata ✨'); done && done();
+    };
   }
 
   /* ---------- DECK ---------- */
   function viewDeck(deck) {
     const s = Store.stats(deck);
     const pct = s.total ? Math.round(s.mastered / s.total * 100) : 0;
-    const kind = { def: 'Definizione', cloze: 'Completa', tf: 'Vero/Falso' };
+    const kind = { def: 'Definizione', cloze: 'Completa', tf: 'Vero/Falso', mcq: 'Scelta multipla' };
     mount(html`
       <p><a href="#/">← Tutti i mazzi</a></p>
       <div class="row between"><h1 style="margin:0">${esc(deck.name)}</h1>
@@ -198,6 +240,7 @@
     });
   }
   function cardPreview(c) {
+    if (c.type === 'mcq') return `<b>${esc(c.q)}</b><br>→ ${esc(c.answer)}`;
     if (c.type === 'def') return `<b>${esc(c.term)}</b>: ${esc(c.desc)}`;
     if (c.type === 'cloze') return clozeFull(c);
     return `${esc(c.statement)} <b>(${c.truth ? 'Vero' : 'Falso'})</b>`;
@@ -252,6 +295,8 @@
   }
   function cardFaces(c, deck) {
     const t = L(deck);
+    if (c.type === 'mcq') return [`<div class="label">Domanda</div>${esc(c.q)}`,
+      `<div class="label">Risposta</div><span class="answer">${esc(c.answer)}</span>${c.context ? '<small>' + esc(c.context) + '</small>' : ''}`];
     if (c.type === 'def') return [`<div class="label">Definizione</div>${esc(t.defCard(c.term))}`,
       `<div class="label">Risposta</div><span class="answer">${esc(c.desc)}</span>`];
     if (c.type === 'cloze') return [`<div class="label">Completa</div>${clozeHtml(c.text)}`,
@@ -328,6 +373,7 @@
   function buildQuestion(c, deck, mode) {
     const t = L(deck);
     const wantTyped = mode === 'typed' || (mode === 'mixed' && Math.random() < 0.35);
+    if (c.type === 'mcq') return { card: c, kind: 'mc', prompt: esc(c.q), options: Gen.shuffle(c.options), correct: c.answer };
     if (c.type === 'tf') return { card: c, kind: 'tf', prompt: `<div class="muted">${t.tf}</div>${esc(c.statement)}`, correct: c.truth };
     if (c.type === 'def') {
       if (c.distractors && c.distractors.length >= 3 && !wantTyped)
