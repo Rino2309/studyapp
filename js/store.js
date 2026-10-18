@@ -69,8 +69,8 @@
   }
   function validate(obj) {
     if (!obj || !Array.isArray(obj.cards) || !obj.cards.length) throw new Error('Mazzo non valido');
-    const ok = ['def', 'cloze', 'tf'];
-    const cards = obj.cards.filter(c => c && ok.includes(c.type)).map(c => ({ ...c, id: c.id || root.Gen.uid() }));
+    const ok = ['def', 'cloze', 'tf', 'mcq'];
+    const cards = obj.cards.filter(c => c && ok.includes(c.type) && (c.type !== 'mcq' || (Array.isArray(c.options) && c.options.length === 4 && c.options.includes(c.answer)))).map(c => ({ ...c, id: c.id || root.Gen.uid() }));
     if (!cards.length) throw new Error('Il mazzo non contiene domande valide');
     return { name: String(obj.name || 'Mazzo importato').slice(0, 120), lang: obj.lang === 'en' ? 'en' : 'it', cards };
   }
